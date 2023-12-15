@@ -161,7 +161,7 @@ str_utf8 * CAPECharacterHelper::GetUTF8FromUTF16(const str_utfn * pUTF16)
                 if (z + 1 < nCharacters && (pUTF16[z+1] > 0xDC00 && pUTF16[z+1] < 0xDFFF)) {
                     str_utfn high = pUTF16[z] & 0x3FF;
                     str_utfn low = pUTF16[z + 1] & 0x3FF;
-                    uint32 codepoint = low | (high << 10) | 0x10000;
+                    uint32 codepoint = 0x10000 | (high << 10) | low;
 
                     //printf("high: %x (%x)\nlow: %x (%x)\n", pUTF16[z], high, pUTF16[z+1], low);
                     //printf("codepoint: %x\n", codepoint);
