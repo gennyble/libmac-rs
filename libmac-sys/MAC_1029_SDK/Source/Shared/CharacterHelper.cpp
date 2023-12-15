@@ -109,12 +109,40 @@ str_utf8 * CAPECharacterHelper::GetUTF8FromUTF16(const str_utfn * pUTF16)
     int nUTF8Bytes = 0;
     for (int z = 0; z < nCharacters; z++)
     {
-        if (pUTF16[z] < 0x0080)
+        if (pUTF16[z] < 0x0080) {
+            printf("[%x]: 1\n", pUTF16[z]);
             nUTF8Bytes += 1;
-        else if (pUTF16[z] < 0x0800)
+        } else if (pUTF16[z] < 0x0800) {
+            printf("[%x]: 2\n", pUTF16[z]);
             nUTF8Bytes += 2;
-        else
+        } else if (pUTF16[z] > 0xD800 && pUTF16[z] < 0xDFFF) {
+            // We're a surrogate.
+            if (pUTF16[z] < 0xDC00) {
+                // We're the high part
+
+                if (z + 1 < nCharacters && (pUTF16[z+1] > 0xDC00 && pUTF16[z+1] < 0xDFFF)) {
+                    // Next chracter is the low-part. This is a valid pairing. Skip the
+                    // pair as it's factored in here
+                    z++;
+                    nUTF8Bytes += 4;
+                    printf("[%x %x]: 4 (surrogate)\n", pUTF16[z], pUTF16[z+1]);
+                } else {
+                    // there are no more characters; we're missing the low so
+                    // we should emit the replacement character U+FFFD (3 bytes utf8)
+                    // OR the next was not the low part and we need the replacement
+                    nUTF8Bytes += 3;
+                    printf("[%x]: 3 (unpaired surrogate)\n", pUTF16[z]);
+                }
+            } else {
+                // we're the low part which is an error if it's first and
+                // we're LE UTF-16
+                nUTF8Bytes += 3;
+                printf("[%x]: 3 (malformed surrogate)\n", pUTF16[z]);
+            }
+        } else {
+            printf("[%x]: 3\n", pUTF16[z]);
             nUTF8Bytes += 3;
+        }
     }
 
     // allocate a UTF-8 string
@@ -133,6 +161,35 @@ str_utf8 * CAPECharacterHelper::GetUTF8FromUTF16(const str_utfn * pUTF16)
             *pOutput++ = static_cast<str_utf8>(0xC0 | (pUTF16[z] >> 6));
             *pOutput++ = static_cast<str_utf8>(0x80 | (pUTF16[z] & 0x3F));
         }
+        else if (pUTF16[z] > 0xD800 && pUTF16[z] < 0xDFFF)
+        {
+            if (pUTF16[z] < 0xDC00) {
+                if (z + 1 < nCharacters && (pUTF16[z+1] > 0xDC00 && pUTF16[z+1] < 0xDFFF)) {
+                    str_utfn high = pUTF16[z] & 0x3FF;
+                    str_utfn low = pUTF16[z + 1] & 0x3FF;
+                    uint32 codepoint = low | (high << 10) | 0x10000;
+                    //uint32 codepoint = high | (low << 10);
+                    printf("high: %x (%x)\nlow: %x (%x)\n", pUTF16[z], high, pUTF16[z+1], low);
+                    printf("codepoint: %x\n", codepoint);
+
+                    *pOutput++ = static_cast<str_utf8>(0xF0 | ((codepoint & 0x1C0000) >> 18));
+                    *pOutput++ = static_cast<str_utf8>(0x80 | ((codepoint & 0x3F000) >> 12));
+                    *pOutput++ = static_cast<str_utf8>(0x80 | ((codepoint & 0xFC0) >> 6));
+                    *pOutput++ = static_cast<str_utf8>(0x80 | (codepoint & 0x3F));
+
+                    // jump over the 2nd part of the pair
+                    z++;
+                } else {
+                    *pOutput++ = static_cast<str_utf8>(0xEF);
+                    *pOutput++ = static_cast<str_utf8>(0xBF);
+                    *pOutput++ = static_cast<str_utf8>(0xBD);
+                }
+            } else {
+                *pOutput++ = static_cast<str_utf8>(0xEF);
+                *pOutput++ = static_cast<str_utf8>(0xBF);
+                *pOutput++ = static_cast<str_utf8>(0xBD);
+            }
+        }
         else
         {
             *pOutput++ = static_cast<str_utf8>(0xE0 | (pUTF16[z] >> 12));
@@ -141,6 +198,12 @@ str_utf8 * CAPECharacterHelper::GetUTF8FromUTF16(const str_utfn * pUTF16)
         }
     }
     *pOutput++ = 0;
+
+    printf("from utf16->utf8:\n\t");
+    for (int i = 0; i < nUTF8Bytes; ++i) {
+        printf("%x ", pUTF8[i]);
+    }
+    printf("\n");
 
     // return the UTF-8 string
     return pUTF8;
