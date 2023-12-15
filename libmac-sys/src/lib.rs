@@ -1,35 +1,62 @@
 #![allow(non_camel_case_types)]
-
-use std::{
-	ffi::CString,
-	fs::File,
-	io::Read,
-	mem::size_of,
-	os::fd::{AsRawFd, FromRawFd},
-	thread::sleep,
-	u8::MAX,
-};
+//! raw bindings to the libmac library from [Monkey's Audio SDK](https://www.monkeysaudio.com/developers.html).
+//!
+//! > The terminology "Sample" refers to a single sample value, and "Block" refers
+//! > to a collection of "Channel" samples.  For simplicity, MAC typically uses blocks
+//! > everywhere so that channel mis-alignment cannot happen. (i.e. on a CD, a sample is
+//! > 2 bytes and a block is 4 bytes ([2 bytes per sample] * [2 channels] = 4 bytes))
+//!
+//! Not all functions or defintions are present. If there's something you need an don't have,
+//! consider opening a PR.
+//!
+//! ## NOTE
+//! This crate ships a patched version of the SDK with fixes for how it handles UTF-16 strings.
+//!
+//! UTF-16 surrogate pairs were not being encoded as UTF-8 correctly causing some paths to fail
+//! to resolve. That code has been modified to correct that behaviour.
 
 #[repr(C)]
 #[derive(Debug)]
 pub struct APEDecompress {
-	vtable: *const APEDecompress_VTable,
+	/// Don't use this.
+	///
+	/// It's a -sys crate and so not making it public feels wrong, but don't use this.
+	pub vtable: *const APEDecompress_VTable,
 }
 
 #[link(name = "mac")]
 extern "C" {
+	/// Create the decompressor interface.
+	///
+	/// Returns a pointer to [APEDecompress] on success, or NULL on failure
+	/// (and fills `pErrorCode` if it was passed in)
+	///
+	/// `pFilename` is ASCII only; (see [c_APEDecompress_CreateW] if you need UTF-16)
 	pub fn c_APEDecompress_Create(
 		pFilename: *const std::ffi::c_char,
 		pErrorCode: *mut std::ffi::c_int,
 	) -> *mut APEDecompress;
 
+	/// Create the decompressor interface.
+	///
+	/// Returns a pointer to [APEDecompress] on success, or NULL on failure
+	/// (and fills `pErrorCode` if it was passed in)
+	///
+	/// `pFilename` is a UTF-16 string (see crate-level docs about patched string handling)
 	pub fn c_APEDecompress_CreateW(
 		pFilename: *const u32,
 		pErrorCode: *mut std::ffi::c_int,
 	) -> *mut APEDecompress;
 
+	/// Delete [APEDecompress]
 	pub fn c_APEDecompress_Destroy(hAPEDecompress: *mut APEDecompress);
 
+	/// gets raw decompressed audio
+	///
+	/// # Parameters:
+	/// - `pBuffer`: a pointer to a buffer to put the data into
+	/// - `nBlocks`: the number of audio blocks desired (see note at intro about blocks vs. samples)
+	/// - `pBlocksRetrieved`: the number of blocks actually retrieved (could be less at end of file or on critical failure)
 	pub fn c_APEDecompress_GetData(
 		hAPEDecompress: *mut APEDecompress,
 		pBuffer: *mut std::ffi::c_uchar,
@@ -37,14 +64,24 @@ extern "C" {
 		pBlocksRetrieved: *mut std::ffi::c_longlong,
 	) -> std::ffi::c_int;
 
+	/// seeks
+	///
+	/// # Parameters:
+	/// - `nBlockOffset`: the block to seek to (see note at intro about blocks vs. samples)
 	pub fn c_APEDecompress_Seek(
 		hAPEDecompress: *mut APEDecompress,
 		nBlockOffset: std::ffi::c_longlong,
 	) -> std::ffi::c_int;
 
+	/// get information about the APE file or the state of the decompressor
+	///
+	/// # Parameters:
+	/// - `Field`: the field we're querying (see [APE_DECOMPRESS_FIELDS] for more info)
+	/// - `nParam1`: generic parameter... usage is listed in [APE_DECOMPRESS_FIELDS]
+	/// - `nParam2`: generic parameter... usage is listed in [APE_DECOMPRESS_FIELDS]
 	pub fn c_APEDecompress_GetInfo(
 		hAPEDecompress: *mut APEDecompress,
-		Field: std::ffi::c_int,
+		Field: APE_DECOMPRESS_FIELDS,
 		nParam1: std::ffi::c_longlong,
 		nParam2: std::ffi::c_longlong,
 	) -> std::ffi::c_longlong;
@@ -52,12 +89,25 @@ extern "C" {
 }
 
 // lmao: https://stackoverflow.com/a/73941622
+/// APEDecompress vtable. Should probably be considered extremely unsafe, dangerous,
+/// and likely to cause emotional distress.
+///
+/// Mostly here because I didn't want to get
+/// rid of it. Do you? Open a PR but I like it so I might fight for it's continued
+/// existence a little.
 #[repr(C)]
 pub struct APEDecompress_VTable {
 	//pub offset_destructor: unsafe extern "system" fn(this: *mut decompress),
+	/// Use [c_APEDecompress_Destroy] instead
 	pub destructor: unsafe extern "system" fn(this: *mut APEDecompress),
-	// there is a struct with three bool in the class here.
+	/// there is a struct with three bool in the class here and if i don't
+	/// put this here things get mad. i do not understand, but these functions
+	/// aren't meant to be called anyway they just exist. this is how i was trying
+	/// to do things before i found MACDll.h and thus the C API. but i needed a
+	/// struct to act as the thing-to-be-pointed-at anyway, so i might as
+	/// well keep it here, right? what's the harm. - genny
 	bp: [bool; 3],
+	/// Use [c_APEDecompress_GetData] instead
 	pub get_data: unsafe extern "system" fn(
 		this: *mut APEDecompress,
 		pbuffer: *mut std::ffi::c_uchar,
@@ -66,192 +116,24 @@ pub struct APEDecompress_VTable {
 		ape_void: *const std::ffi::c_void,
 	) -> std::ffi::c_int,
 	//virtual int Seek(int64 nBlockOffset) = 0;
+	/// Use [c_APEDecompress_Seek] instead
 	pub seek: unsafe extern "system" fn(
 		this: *mut APEDecompress,
 		nblock_offset: std::ffi::c_longlong,
 	) -> std::ffi::c_int,
 	//virtual int64 GetInfo(APE_DECOMPRESS_FIELDS Field, int64 nParam1 = 0, int64 nParam2 = 0) = 0;
+	/// Use [c_APEDecompress_GetInfo] instead
 	pub get_info: unsafe extern "system" fn(
 		this: *mut APEDecompress,
-		field: std::ffi::c_int,
+		field: APE_DECOMPRESS_FIELDS,
 		param1: std::ffi::c_longlong,
 		param2: std::ffi::c_longlong,
 	) -> std::ffi::c_longlong,
 }
 
-fn main() {
-	let file = "test.ape";
-	let cstr = CString::new(file).unwrap();
-	let wstr_raw = "💀.ape";
-	let mut wstr: Vec<u32> = String::from(wstr_raw)
-		.encode_utf16()
-		.map(|c| c as u32)
-		.collect(); //.map(|c| c as u32).collect();
-	wstr.push(0x00);
-
-	{
-		let mut cl = wstr.clone();
-		cl.pop();
-		let mut cl16: Vec<u16> = cl.into_iter().map(|c| c as u16).collect();
-		let rt = String::from_utf16(cl16.as_slice()).unwrap();
-
-		println!("roundtrip {rt}");
-
-		/*let hh: Vec<u8> = wstr
-		.iter()
-		.flat_map(|b| b.to_le_bytes().into_iter())
-		.collect();*/
-		print!("utf-16: ");
-		for b in &wstr {
-			print!("{:02X} ", b);
-		}
-		println!();
-
-		print!("\nutf-8: ");
-		for b in wstr_raw.bytes() {
-			print!("{:02X} ", b);
-		}
-		println!();
-
-		println!("Rust can open?");
-		let f = std::fs::File::open(wstr_raw).unwrap();
-		let len = f.metadata().unwrap().len() / 1024;
-		println!("rawfd is {}", f.as_raw_fd());
-		println!("file is {len}KB");
-	}
-
-	let mut errcode = 0;
-
-	let decomp = unsafe { c_APEDecompress_CreateW(wstr.as_ptr(), &mut errcode as *mut i32) };
-	println!("returned / errcode {errcode}");
-	println!("{}", std::io::Error::last_os_error());
-
-	if decomp.is_null() {
-		println!("decomp is null");
-		return;
-	}
-
-	println!("trying to get ape version");
-	let ret = unsafe { ((*(*decomp).vtable).get_info)(decomp as *mut _, 1000, 0, 0) };
-	println!("version: {ret}");
-
-	println!("trying to get ape block alignment");
-	let ret = unsafe { ((*(*decomp).vtable).get_info)(decomp as *mut _, 1007, 0, 0) };
-	println!("alignment: {ret}");
-
-	println!("trying to current block");
-	let ret = unsafe { ((*(*decomp).vtable).get_info)(decomp as *mut _, 2000, 0, 0) };
-	println!("block: {ret}");
-
-	println!("trying to total blocks");
-	let ret = unsafe { ((*(*decomp).vtable).get_info)(decomp as *mut _, 2002, 0, 0) };
-	println!("total: {ret}");
-
-	println!("trying to seek to 2048 with cAPI");
-	let ret = unsafe { c_APEDecompress_Seek(decomp as *mut _, 2048) };
-	println!("seek ret: {ret}");
-
-	println!("trying to current block");
-	let ret = unsafe { ((*(*decomp).vtable).get_info)(decomp as *mut _, 2000, 0, 0) };
-	println!("block: {ret}");
-
-	println!("trying to get io handle");
-	let ret = unsafe { ((*(*decomp).vtable).get_info)(decomp as *mut _, 1027, 0, 0) };
-	println!("handle: {ret}");
-
-	/*let cio_ptr = unsafe { ret as *mut u32 };
-	let mut idx = 0;
-	'outer: loop {
-		for wstr_idx in 0..wstr.len() {
-			let cio = unsafe { *cio_ptr.add(idx + wstr_idx) };
-
-			if cio != wstr[wstr_idx] {
-				idx += 1;
-				continue 'outer;
-			}
-		}
-
-		println!("found filepath at {idx}");
-		break;
-	}
-
-	println!(
-		"sizeof bool: {}\nalign: bool={}, i32={}",
-		size_of::<bool>(),
-		std::mem::align_of::<bool>(),
-		std::mem::align_of::<i32>()
-	);
-
-	for x in 0..MAX_PATH as usize + 64 {
-		let fd = unsafe { *((cio_ptr.add(idx) as *const char).add(x) as *const u8) };
-
-		if x == 1000000 {
-			let fd_ptr: *const u32 = unsafe {
-				(cio_ptr.add(idx + MAX_PATH as usize) as *const char).add(x) as *const u32
-			};
-			println!("pointer to fd: {}", fd_ptr as u32);
-			let ptr = unsafe { *fd_ptr as *const u32 };
-			println!("\tdata there: {}", ptr as u32);
-			let fd = unsafe { *ptr };
-			println!("double deref: {fd}");
-		}
-
-		print!("{fd:02X} ");
-
-		if x == MAX_PATH as usize - 1 {
-			println!("\n--");
-		}
-
-		if x % 16 == 15 {
-			println!()
-		}
-	}
-
-	let fd_ptr: *const u32 = unsafe { cio_ptr.add(idx + MAX_PATH as usize) };
-	println!("pointer to cio: {:?}", cio_ptr);
-	println!("pointer to fd: {:?}", fd_ptr);
-	let ptr = unsafe { *fd_ptr as *const u32 };
-	println!("\tdata there: {}", ptr as u32);*/
-
-	let pid = std::process::id();
-	println!("sleeping for five minutes; PID {pid}");
-	sleep(std::time::Duration::from_secs(60 * 5));
-
-	println!("trying to seek to 8096");
-	let ret = unsafe { ((*(*decomp).vtable).seek)(decomp as *mut _, 8096) };
-	println!("seek ret: {ret}");
-
-	println!("trying to current block");
-	let ret = unsafe { ((*(*decomp).vtable).get_info)(decomp as *mut _, 2000, 0, 0) };
-	println!("block: {ret}");
-
-	println!("trying to get data...");
-	// 256MB to be commically large just in case
-	let mut buffer: Vec<u8> = vec![0; 1024 * 1024 * 256];
-	let mut retreived: u64 = 0;
-	let ret = unsafe {
-		((*(*decomp).vtable).get_data)(
-			decomp as *mut _,
-			buffer.as_mut_ptr(),
-			1024,
-			&mut retreived as *mut u64,
-			std::ptr::null(),
-		)
-	};
-	if ret != 0 {
-		println!("error getting data {ret}");
-		return;
-	}
-	println!("returned: {ret}");
-	println!(
-		"sum of data: {}",
-		buffer.iter().fold(0usize, |acc, c| acc + *c as usize)
-	);
-	println!("slice of first 16 bytes:\n{:?}", &buffer[0..16]);
-
-	unsafe { ((*(*decomp).vtable).destructor)(decomp as *mut _) };
-}
-
+/// Give this to [c_APEDecompress_GetInfo]. The two items in square
+/// brackets are [param1, param2].
+#[repr(C)]
 pub enum APE_DECOMPRESS_FIELDS {
 	/// version of the APE file * 1000 (3.93 = 3930) [ignored, ignored]
 	APE_INFO_FILE_VERSION = 1000,
@@ -341,7 +223,7 @@ pub enum APE_DECOMPRESS_FIELDS {
 	APE_INTERNAL_INFO = 3000,
 }
 
-pub const MAX_PATH: i32 = 4096;
+//pub const MAX_PATH: i32 = 4096;
 
 pub const APE_COMPRESSION_LEVEL_FAST: i32 = 1000;
 pub const APE_COMPRESSION_LEVEL_NORMAL: i32 = 2000;
