@@ -9,3 +9,8 @@ This crate contains a patched version of the SDK Source
   helping me debug this and gently guide my implementation.
 
 [charhelp-path]: libmac-sys/MAC_1029_SDK/Source/Shared/CharacterHelper.cpp
+
+# license
+MAC SDK is Copyright © 2000-2024 by Matthew T. Ashland. (BSD 3-clause)
+
+bindings are Copyright 2023 gennyble <gen@nyble.dev> (ISC)
